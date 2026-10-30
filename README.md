@@ -11,7 +11,7 @@ small privileged app that talks that protocol and turns the remote into an ordin
 - Built and tested on a Ugoos SK4 Pro (Amlogic, Android 14). Other boxes should work but are untested.
 
 ## Install
-1. Magisk app → Modules → Install from storage → `SiriRemoteBridge-v1.0-magisk.zip`, then reboot.
+1. Magisk app → Modules → Install from storage → `SiriRemoteBridge-v1.1-magisk.zip`, then reboot.
 2. Within 5 minutes after boot, hold **Back (<) + Volume Up** on the remote for ~5 s, right next to the box.
    It pairs and connects by itself. Later boots reconnect automatically on the first button press.
 
@@ -22,7 +22,7 @@ To pair again (new remote or after unpairing):
 | Remote | Android |
 |---|---|
 | Click ring up / down / left / right | D-pad (hold to repeat) |
-| Click pad centre | OK |
+| Click pad centre | OK (hold for long-press, like a regular remote) |
 | Back (<) | Back |
 | TV | Home |
 | Play/Pause | Play/Pause |

@@ -55,12 +55,13 @@ public class BridgeService extends Service {
     static final int VOICE_HOLD_MS = 400;
     static final UUID APPLE_SERVICE = UUID.fromString("8341f2b4-c013-4f04-8197-c4cdb42e26dc");   // only Apple remotes have it
     static final android.os.ParcelUuid HID = android.os.ParcelUuid.fromString("00001812-0000-1000-8000-00805f9b34fb");
-    // bitmask -> Linux key code (Generic.kl turns these into Android keys), 1 = repeats while held
+    // bitmask -> Linux key code (Generic.kl turns these into Android keys); 1 = repeats while held,
+    // 2 = held exactly as long as the button (Android's own long-press, like a regular remote)
     static final int[][] KEYS = {
         {1, 172, 0},     // TV button   -> KEY_HOMEPAGE (HOME)
         {2, 115, 1},     // Volume +    -> KEY_VOLUMEUP
         {4, 114, 1},     // Volume -    -> KEY_VOLUMEDOWN
-        {8, 353, 0},     // pad click   -> KEY_SELECT (DPAD_CENTER)
+        {8, 353, 2},     // pad click   -> KEY_SELECT (DPAD_CENTER)
         {16, 116, 0},    // Power       -> KEY_POWER
         {32, 583, 0},    // Siri        -> KEY_ASSISTANT
         {64, 158, 0},    // Back        -> KEY_BACK
@@ -296,6 +297,8 @@ public class BridgeService extends Service {
             } else if ((released & bit) != 0 && bit == SIRI) {
                 if ((held & SIRI) != 0) held &= ~SIRI;
                 else { voice.disarm(); key(buf, KEY_MENU, 1); key(buf, KEY_MENU, 0); }   // a tap
+            } else if ((pressed & bit) != 0 && k[2] == 2) {
+                key(buf, code, 1); held |= bit;   // released below when the button comes up
             } else if ((pressed & bit) != 0) {
                 key(buf, code, 1); key(buf, code, 0);
                 int press = ++presses;
@@ -309,8 +312,9 @@ public class BridgeService extends Service {
         if (buf.position() > 0) inject(buf);
     }
 
-    static ByteBuffer buffer() { return ByteBuffer.allocate(32 * KEYS.length * 2).order(ByteOrder.LITTLE_ENDIAN); }
+    static ByteBuffer buffer() { return ByteBuffer.allocate(32 * (KEYS.length + 1) * 3).order(ByteOrder.LITTLE_ENDIAN); }
 
+    // Never send a release for a key that isn't down: through uinput it makes the next press of that key vanish.
     static void key(ByteBuffer b, int code, int value) { event(b, 1, code, value); event(b, 0, 0, 0); }
 
     void release() {   // never leave a key held when the link drops (and a dropped Siri hold is not a Menu tap)
@@ -333,7 +337,8 @@ public class BridgeService extends Service {
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
                 ensureInjector();
-                if (UINPUT) injectOut.write(json(buf).getBytes()); else injectOut.write(buf.array(), 0, buf.position());
+                if (UINPUT) injectOut.write(json(buf).getBytes());
+                else injectOut.write(buf.array(), 0, buf.position());
                 injectOut.flush();
                 return;
             } catch (Exception e) {
@@ -350,6 +355,14 @@ public class BridgeService extends Service {
             : "for e in /sys/class/input/event*; do [ \"$(cat $e/device/name)\" = virtual-search ] && exec cat > /dev/input/${e##*/}; done")
             .redirectErrorStream(true).start();
         injectOut = injector.getOutputStream();
+        // drain the root shell's output into the log: unread, it fills the pipe and the injector stalls
+        java.io.InputStream out = injector.getInputStream();
+        new Thread(() -> {
+            try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(out))) {
+                for (String l; (l = r.readLine()) != null; ) Log.i(T, "injector: " + l);
+            } catch (Exception ignored) { }
+            Log.w(T, "injector exited");
+        }, "injector-log").start();
         if (!UINPUT) return;
         StringBuilder keys = new StringBuilder();
         for (int[] k : KEYS) keys.append(k[1]).append(',');
