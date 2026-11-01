@@ -41,7 +41,8 @@ import java.util.UUID;
  *
  * Pair:    am start-foreground-service -n net.sk4pro.siriremote/.BridgeService --ez pair true, then hold Back + Volume Up
  *          (also runs for 5 min after boot while no remote is paired)
- * Other:   --es unpair <address>, --ez scan true (log nearby devices)
+ * Other:   --ez stop true (disconnect), --ez forget true (unpair the remote), --es unpair <address>,
+ *          --ez scan true (log nearby devices). SettingsActivity sends the same extras.
  * Log:     logcat -s SiriBridge
  */
 public class BridgeService extends Service {
@@ -86,6 +87,9 @@ public class BridgeService extends Service {
     boolean isRemote;   // set only after the GATT table proves it is an Apple remote: nothing else gets to press keys
     Process injector;
     OutputStream injectOut;
+    static volatile String state = "Stopped";   // shown by SettingsActivity (same process)
+
+    void state(String s) { state = s; Log.i(T, "state: " + s); }
 
     @Override public IBinder onBind(Intent i) { return null; }
 
@@ -101,7 +105,27 @@ public class BridgeService extends Service {
         registerReceiver(bondReceiver, new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
     }
 
+    @Override public void onDestroy() {
+        if (pairer != null) { adapter.getBluetoothLeScanner().stopScan(pairer); pairer = null; }
+        probes = null;
+        drop();
+        unregisterReceiver(bondReceiver);
+        if (injector != null) injector.destroy();   // removes the "Siri Remote" input device
+        state("Disconnected");
+    }
+
+    void drop() { if (gatt != null) { release(); gatt.disconnect(); gatt.close(); gatt = null; } }
+
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.getBooleanExtra("stop", false)) { stopSelf(); return START_NOT_STICKY; }
+        if (intent != null && intent.getBooleanExtra("forget", false)) {
+            String mac = prefs.getString("mac", null);
+            prefs.edit().remove("mac").apply();
+            drop();
+            if (mac != null) unpair(adapter.getRemoteDevice(mac));
+            state("No remote paired");
+            return START_STICKY;
+        }
         if (intent != null && intent.getStringExtra("mac") != null)
             prefs.edit().putString("mac", intent.getStringExtra("mac").toUpperCase()).apply();
         if (intent != null && intent.getStringExtra("unpair") != null) { unpair(adapter.getRemoteDevice(intent.getStringExtra("unpair"))); return START_STICKY; }
@@ -171,11 +195,11 @@ public class BridgeService extends Service {
         adapter.getBluetoothLeScanner().startScan(java.util.List.of(new android.bluetooth.le.ScanFilter.Builder()
                 .setServiceUuid(HID).setManufacturerData(0x004C, new byte[0]).build()),
             new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), pairer);
-        Log.i(T, "no remote yet: hold Back + Volume Up on the Siri Remote next to the box (scanning for 5 min)");
+        state("Pairing: hold Back + Volume Up on the remote, next to the box");
         probeBonded();
         // a scan that never ends competes with Wi-Fi for the shared radio; restart with --ez pair true
         ScanCallback mine = pairer;
-        h.postDelayed(() -> { if (pairer == mine) { adapter.getBluetoothLeScanner().stopScan(mine); pairer = null; Log.i(T, "pairing scan stopped"); } }, 300_000);
+        h.postDelayed(() -> { if (pairer == mine) { adapter.getBluetoothLeScanner().stopScan(mine); pairer = null; state(prefs.getString("mac", null) == null ? "Pairing timed out" : state); } }, 300_000);
     }
 
     String pairing;
@@ -183,6 +207,7 @@ public class BridgeService extends Service {
     void connect(BluetoothDevice d) {
         if (gatt != null) { gatt.close(); gatt = null; }
         Log.i(T, "connect " + d.getAddress() + " bond=" + d.getBondState());
+        state("Waiting for the remote: press any button on it");
         if (d.getBondState() == BluetoothDevice.BOND_NONE) { prefs.edit().remove("mac").apply(); pair(); return; }   // bond lost: pair again
         // autoConnect: the remote sleeps when idle and reconnects on the next press
         gatt = d.connectGatt(this, true, cb, BluetoothDevice.TRANSPORT_LE);
@@ -206,7 +231,11 @@ public class BridgeService extends Service {
             h.post(() -> {
                 ops.clear();
                 if (state == BluetoothGatt.STATE_CONNECTED) { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH); g.discoverServices(); }
-                else { release(); if (probes != null) probeNext(); }   // a probe that didn't connect: try the next
+                else {
+                    release();
+                    if (probes != null) probeNext();   // a probe that didn't connect: try the next
+                    else if (g == gatt && isRemote) state("Remote asleep: press any button to wake it");
+                }
             });
         }
 
@@ -264,6 +293,7 @@ public class BridgeService extends Service {
                 ops.add(() -> g.writeDescriptor(d, on ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE));
             }
         }
+        state("Connected");
         if (magic == null) Log.w(T, "no characteristic at the magic handle: not the expected remote layout");
         else { BluetoothGattCharacteristic m = magic;
             ops.add(() -> g.writeCharacteristic(m, new byte[]{(byte) 0xF0, 0x00}, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)); }

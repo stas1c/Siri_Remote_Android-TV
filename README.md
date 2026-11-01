@@ -11,12 +11,19 @@ small privileged app that talks that protocol and turns the remote into an ordin
 - Built and tested on a Ugoos SK4 Pro (Amlogic, Android 14). Other boxes should work but are untested.
 
 ## Install
-1. Magisk app → Modules → Install from storage → `SiriRemoteBridge-v1.1-magisk.zip`, then reboot.
+1. Magisk app → Modules → Install from storage → `SiriRemoteBridge-v1.2-magisk.zip`, then reboot.
 2. Within 5 minutes after boot, hold **Back (<) + Volume Up** on the remote for ~5 s, right next to the box.
    It pairs and connects by itself. Later boots reconnect automatically on the first button press.
 
-To pair again (new remote or after unpairing):
-`adb shell am start-foreground-service -n net.sk4pro.siriremote/.BridgeService --ez pair true`, then hold Back + Volume Up.
+## Managing the remote
+Open **Siri Remote** from the TV's app list. It shows whether the remote is connected, asleep or pairing, plus:
+- **Pair a remote**: scan for 5 min, then hold Back + Volume Up on the remote next to the box.
+- **Reconnect**: start the bridge again (also after Disconnect).
+- **Disconnect**: stop the bridge until you press Reconnect or reboot.
+- **Forget remote**: unpair it. Use this before pairing a different remote.
+
+The same over adb: `adb shell am start-foreground-service -n net.sk4pro.siriremote/.BridgeService` with
+`--ez pair true`, `--ez stop true` or `--ez forget true` (no extra = reconnect).
 
 ## Buttons
 | Remote | Android |
