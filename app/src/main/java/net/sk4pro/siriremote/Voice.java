@@ -53,8 +53,8 @@ class Voice {
     /** Siri was only tapped: forget the audio. */
     void disarm() { h.post(() -> early = null); }
 
-    /** Siri held: open the Assistant listening to our pipe, starting with the audio kept since the press; failed runs
-     *  if that could not start. */
+    /** Siri held: open the Assistant listening to our pipe (or, if an app's own voice search is already listening, feed
+     *  that), starting with the audio kept since the press; failed runs if that could not start. */
     void start(Runnable failed) {
         h.post(() -> {
             java.util.List<byte[]> kept = early; early = null;
@@ -73,7 +73,7 @@ class Voice {
 
     void feed(byte[] v) {
         {
-            if (queue == null || v.length < 6 || v[4] == 0 || 5 + (v[4] & 0xff) > v.length) return;
+            if (opus == null || v.length < 6 || v[4] == 0 || 5 + (v[4] & 0xff) > v.length) return;
             if (!gotAudio) { gotAudio = true; Log.i(T, "voice: audio streaming"); }
             h.removeCallbacks(idle);
             h.postDelayed(idle, IDLE_MS);
@@ -86,6 +86,9 @@ class Voice {
 
     boolean open() {
         close();
+        // an app's voice search (e.g. Nuvio's mic button, Android's SpeechRecognizer) is already recording the box's
+        // placeholder mic: feed that instead of opening the Assistant. Checked before our own policy exists.
+        boolean appListening = AudioInjector.voiceRecording(ctx.getSystemService(android.media.AudioManager.class));
         try {
             try {   // before the launch, so the Assistant's recorder is routed to the injection when it opens
                 AudioInjector inj = AudioInjector.start(ctx);
@@ -93,20 +96,24 @@ class Voice {
                 inj.run(injectQueue);
             } catch (Throwable e) {
                 Log.w(T, "voice: injection unavailable: " + (e.getCause() != null ? e.getCause() : e));
+                appListening = false;   // nothing else could reach the app: fall back to the Assistant
             }
-            ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
-            Bundle args = new Bundle();
-            args.putParcelable("AUDIO_STREAM_KEY", new AudioStream(pipe[0], 1, 16, 16000));
-            // ACTION_ASSIST with the session args, as Google's remote service does (SearchManager.launchAssist is a
-            // no-op on this TV build); KEY_EVENT=KEYCODE_ASSIST selects the Assistant's "remote mic" path
-            ctx.startActivity(new Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra("android.intent.extra.KEY_EVENT", 219).putExtra("search_type", 1)
-                .putExtra("android.intent.extra.TIME", SystemClock.uptimeMillis()).putExtra("SHOW_SESSION_ARGS", args));
-            Log.i(T, "voice: Assistant launched");
-            readEnd = pipe[0];   // handed out through the stream's binder; closed when the query ends
-            writeEnd = pipe[1];
-            queue = new LinkedBlockingQueue<>();
-            startWriter(queue, writeEnd);
+            if (appListening) Log.i(T, "voice: feeding the app that is listening");
+            else {
+                ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
+                Bundle args = new Bundle();
+                args.putParcelable("AUDIO_STREAM_KEY", new AudioStream(pipe[0], 1, 16, 16000));
+                // ACTION_ASSIST with the session args, as Google's remote service does (SearchManager.launchAssist is
+                // a no-op on this TV build); KEY_EVENT=KEYCODE_ASSIST selects the Assistant's "remote mic" path
+                ctx.startActivity(new Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra("android.intent.extra.KEY_EVENT", 219).putExtra("search_type", 1)
+                    .putExtra("android.intent.extra.TIME", SystemClock.uptimeMillis()).putExtra("SHOW_SESSION_ARGS", args));
+                Log.i(T, "voice: Assistant launched");
+                readEnd = pipe[0];   // handed out through the stream's binder; closed when the query ends
+                writeEnd = pipe[1];
+                queue = new LinkedBlockingQueue<>();
+                startWriter(queue, writeEnd);
+            }
             opus = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS);
             MediaFormat f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, 16000, 1);
             f.setByteBuffer("csd-0", opusHead());
@@ -152,7 +159,7 @@ class Voice {
                 if (out < 0) continue;
                 ByteBuffer pcm = opus.getOutputBuffer(out).order(ByteOrder.LITTLE_ENDIAN);
                 byte[] pcm16 = to16k(pcm, bi.size, Math.max(1, decoderRate / 16000));
-                queue.add(pcm16);
+                if (queue != null) queue.add(pcm16);   // no pipe when feeding an app's own voice search
                 if (injectQueue != null) injectQueue.add(pcm16);
                 opus.releaseOutputBuffer(out, false);
             }
@@ -176,8 +183,9 @@ class Voice {
 
     void close() {
         h.removeCallbacks(idle);
+        if (opus != null) Log.i(T, "voice: query ended" + (gotAudio ? "" : " (no audio arrived)"));
         try { if (opus != null) { opus.stop(); opus.release(); } } catch (Throwable ignored) { }
-        if (queue != null) { queue.add(new byte[0]); Log.i(T, "voice: query ended" + (gotAudio ? "" : " (no audio arrived)")); }
+        if (queue != null) queue.add(new byte[0]);
         if (injectQueue != null) injectQueue.add(new byte[0]);   // the injector drains, adds a silent tail, unregisters
         injectQueue = null;
         // the writer closes the pipe after draining; if the Assistant isn't reading, force it shut shortly after

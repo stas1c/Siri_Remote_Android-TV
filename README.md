@@ -38,6 +38,7 @@ The same over adb: `adb shell am start-foreground-service -n net.sk4pro.siriremo
 | Power | Power |
 | Siri, tap | Menu |
 | Siri, hold and speak | Google Assistant voice search |
+| Siri, hold and speak while an app's voice search is listening | Your voice goes into that app (e.g. select Nuvio's mic, then hold Siri) |
 
 Not supported: touch-surface swipes.
 

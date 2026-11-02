@@ -115,7 +115,10 @@ final class AudioInjector {
         return out;
     }
 
-    boolean recording() {
+    boolean recording() { return voiceRecording(am); }
+
+    /** Someone (the Assistant, or an app's voice search via SpeechRecognizer) is recording for speech recognition. */
+    static boolean voiceRecording(AudioManager am) {
         for (AudioRecordingConfiguration c : am.getActiveRecordingConfigurations())
             if (c.getClientAudioSource() == MediaRecorder.AudioSource.VOICE_RECOGNITION) return true;
         return false;
