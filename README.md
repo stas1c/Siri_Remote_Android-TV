@@ -45,9 +45,15 @@ Not supported: touch-surface swipes.
 - The app connects to the remote over Bluetooth LE, unlocks its input reports, and subscribes to buttons and microphone only.
 - Keys come from a virtual input device named "Siri Remote", registered through Android's `uinput` tool in a root shell.
 - Voice: the remote's Opus microphone audio is decoded, converted to 16 kHz, and handed to Google Assistant through the same
-  audio-stream interface Google's own TV remote service uses.
+  audio-stream interface Google's own TV remote service uses. Assistant builds that ignore that stream and record the
+  box's microphone instead (e.g. on Amlogic boxes, where it's an empty placeholder) get the same audio through Android's
+  audio-policy injection, which feeds it into their voice-recognition recording.
+- Android's own HID host is switched off for the remote: with no kernel HID device behind the remote's empty report map
+  it stalled ~50 ms on every report, delivering the 50 frames/s microphone stream at 20/s (speech arrived chopped and
+  slowed down, and the Assistant heard nothing).
 - It only acts on devices that expose Apple's remote service, so it can't take over another Bluetooth device by mistake.
-- Privileged permissions used: `BLUETOOTH_PRIVILEGED` (Apple's HID data), `START_ACTIVITIES_FROM_BACKGROUND` (opening the Assistant).
+- Privileged permissions used: `BLUETOOTH_PRIVILEGED` (Apple's HID data), `START_ACTIVITIES_FROM_BACKGROUND` (opening the Assistant),
+  `MODIFY_AUDIO_ROUTING` (voice injection).
 
 ## Build
 Needs JDK 17 and the Android SDK (platform 34).

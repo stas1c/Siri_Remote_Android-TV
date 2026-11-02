@@ -3,5 +3,6 @@
     <privapp-permissions package="net.sk4pro.siriremote">
         <permission name="android.permission.BLUETOOTH_PRIVILEGED"/>
         <permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING"/>
     </privapp-permissions>
 </permissions>

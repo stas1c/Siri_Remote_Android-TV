@@ -21,7 +21,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 /**
  * Siri button -> Google Assistant voice search, the way Google's own TV remote service does it: start the Assistant
  * with an AudioStream (pipe, 16 kHz mono 16-bit) in its session args and write the remote's decoded microphone audio
- * into the pipe; closing the pipe ends the query. The remote streams one Opus frame per notification:
+ * into the pipe; closing the pipe ends the query. Assistant builds that ignore the pipe and record instead get the
+ * same audio through AudioInjector. The remote streams one Opus frame per notification:
  * [4-byte header][length][Opus frame].
  */
 class Voice {
@@ -37,8 +38,10 @@ class Voice {
     final Handler h;
     MediaCodec opus;
     LinkedBlockingQueue<byte[]> queue;   // decoded 16 kHz PCM for the pipe writer thread
+    LinkedBlockingQueue<byte[]> injectQueue;   // the same PCM for AudioInjector; null if injection is unavailable
     ParcelFileDescriptor writeEnd, readEnd;
     int frames;
+    int decoderRate;   // the decoder's real output rate, from its output-format event
     java.util.ArrayList<byte[]> early;   // audio sent while it's not yet known whether Siri is a tap or a hold
     boolean gotAudio;
 
@@ -84,6 +87,13 @@ class Voice {
     boolean open() {
         close();
         try {
+            try {   // before the launch, so the Assistant's recorder is routed to the injection when it opens
+                AudioInjector inj = AudioInjector.start(ctx);
+                injectQueue = new LinkedBlockingQueue<>();
+                inj.run(injectQueue);
+            } catch (Throwable e) {
+                Log.w(T, "voice: injection unavailable: " + (e.getCause() != null ? e.getCause() : e));
+            }
             ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
             Bundle args = new Bundle();
             args.putParcelable("AUDIO_STREAM_KEY", new AudioStream(pipe[0], 1, 16, 16000));
@@ -104,7 +114,7 @@ class Voice {
             f.setByteBuffer("csd-2", le64(80_000_000L));       // seek pre-roll (ns)
             opus.configure(f, null, null, 0);
             opus.start();
-            frames = 0; gotAudio = false;
+            frames = 0; gotAudio = false; decoderRate = 48000;
             h.postDelayed(idle, NO_AUDIO_MS);
             return true;
         } catch (Throwable e) {
@@ -134,9 +144,16 @@ class Voice {
                 opus.queueInputBuffer(in, 0, len, SystemClock.uptimeMillis() * 1000, 0);
             }
             MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
-            for (int out; (out = opus.dequeueOutputBuffer(bi, 0)) >= 0; ) {
+            for (int out; (out = opus.dequeueOutputBuffer(bi, 0)) != MediaCodec.INFO_TRY_AGAIN_LATER; ) {
+                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    decoderRate = opus.getOutputFormat().getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    continue;
+                }
+                if (out < 0) continue;
                 ByteBuffer pcm = opus.getOutputBuffer(out).order(ByteOrder.LITTLE_ENDIAN);
-                queue.add(to16k(pcm, bi.size));
+                byte[] pcm16 = to16k(pcm, bi.size, Math.max(1, decoderRate / 16000));
+                queue.add(pcm16);
+                if (injectQueue != null) injectQueue.add(pcm16);
                 opus.releaseOutputBuffer(out, false);
             }
         } catch (Throwable e) {
@@ -144,13 +161,16 @@ class Voice {
         }
     }
 
-    // Android's Opus decoder always outputs 48 kHz; the Assistant wants 16 kHz: average each 3 samples (crude
-    // low-pass) and keep one
-    static byte[] to16k(ByteBuffer pcm48, int bytes) {
-        int n = bytes / 2 / 3;
+    // The Assistant wants 16 kHz; Android's Opus decoder reports its output rate (48 kHz on the boxes seen so far) in
+    // the output-format event. factor = decoder rate / 16000: average each group of samples (crude low-pass), keep one
+    static byte[] to16k(ByteBuffer pcm, int bytes, int factor) {
+        int n = bytes / 2 / factor;
         ByteBuffer out = ByteBuffer.allocate(n * 2).order(ByteOrder.LITTLE_ENDIAN);
-        for (int i = 0; i < n; i++)
-            out.putShort((short) ((pcm48.getShort() + pcm48.getShort() + pcm48.getShort()) / 3));
+        for (int i = 0; i < n; i++) {
+            int sum = 0;
+            for (int k = 0; k < factor; k++) sum += pcm.getShort();
+            out.putShort((short) (sum / factor));
+        }
         return out.array();
     }
 
@@ -158,6 +178,8 @@ class Voice {
         h.removeCallbacks(idle);
         try { if (opus != null) { opus.stop(); opus.release(); } } catch (Throwable ignored) { }
         if (queue != null) { queue.add(new byte[0]); Log.i(T, "voice: query ended" + (gotAudio ? "" : " (no audio arrived)")); }
+        if (injectQueue != null) injectQueue.add(new byte[0]);   // the injector drains, adds a silent tail, unregisters
+        injectQueue = null;
         // the writer closes the pipe after draining; if the Assistant isn't reading, force it shut shortly after
         ParcelFileDescriptor w = writeEnd, r = readEnd;
         if (w != null) h.postDelayed(() -> { try { w.close(); r.close(); } catch (Throwable ignored) { } }, 3000);

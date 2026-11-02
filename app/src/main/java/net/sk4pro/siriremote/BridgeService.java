@@ -12,6 +12,7 @@ import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
@@ -277,6 +278,7 @@ public class BridgeService extends Service {
             Log.i(T, "remote found among bonded devices: " + g.getDevice().getAddress());
         }
         try { ensureInjector(); } catch (Exception e) { Log.w(T, "injector: " + e); }
+        forbidHidHost(g.getDevice());
         BluetoothGattCharacteristic magic = null;
         for (BluetoothGattService s : g.getServices()) {
             Log.i(T, "service " + s.getUuid());
@@ -299,6 +301,26 @@ public class BridgeService extends Service {
             ops.add(() -> g.writeCharacteristic(m, new byte[]{(byte) 0xF0, 0x00}, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)); }
         ops.addFirst(() -> g.requestMtu(247));
         next();
+    }
+
+    // Android's HID host still claims the remote's report characteristics. With no kernel HID device behind it
+    // (empty report map), it waits ~50 ms on every report ("bta_hh_co_data ... ready 0") on the thread that also
+    // delivers our notifications: the mic's 50 frames/s reached us at 20/s, so 3 s of speech arrived over 7.5 s in
+    // 20 ms pieces and the Assistant heard nothing. This bridge reads the remote over GATT itself, so switch HID host
+    // off for it (system API, allowed by BLUETOOTH_PRIVILEGED; kept by the stack, repeating it is harmless).
+    void forbidHidHost(BluetoothDevice d) {
+        adapter.getProfileProxy(this, new BluetoothProfile.ServiceListener() {
+            @Override public void onServiceConnected(int profile, BluetoothProfile p) {
+                try {
+                    p.getClass().getMethod("setConnectionPolicy", BluetoothDevice.class, int.class).invoke(p, d, 0);
+                    Log.i(T, "HID host off for " + d.getAddress());
+                } catch (Throwable e) {
+                    Log.w(T, "HID host policy: " + (e.getCause() != null ? e.getCause() : e));
+                }
+                adapter.closeProfileProxy(profile, p);
+            }
+            @Override public void onServiceDisconnected(int profile) { }
+        }, 4);   // BluetoothProfile.HID_HOST, hidden in the public SDK
     }
 
     void next() {
