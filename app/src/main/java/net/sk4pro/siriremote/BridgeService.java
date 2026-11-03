@@ -104,6 +104,9 @@ public class BridgeService extends Service {
         prefs = getSharedPreferences("bridge", MODE_PRIVATE);
         voice = new Voice(this);
         registerReceiver(bondReceiver, new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+        IntentFilter updates = new IntentFilter(Intent.ACTION_PACKAGE_REPLACED);
+        updates.addDataScheme("package");
+        registerReceiver(updateReceiver, updates);
     }
 
     @Override public void onDestroy() {
@@ -111,6 +114,8 @@ public class BridgeService extends Service {
         probes = null;
         drop();
         unregisterReceiver(bondReceiver);
+        unregisterReceiver(updateReceiver);
+        h.removeCallbacks(restartAssistant);
         if (injector != null) injector.destroy();   // removes the "Siri Remote" input device
         state("Disconnected");
     }
@@ -213,6 +218,31 @@ public class BridgeService extends Service {
         // autoConnect: the remote sleeps when idle and reconnects on the next press
         gatt = d.connectGatt(this, true, cb, BluetoothDevice.TRANSPORT_LE);
     }
+
+    // A background Play Services (or Assistant) update kills the Assistant mid-session; it can come back stuck in
+    // "listening", pausing every media session the moment it starts playing (seen with Nuvio). Restart it once the
+    // updates settle: the same force-stop that cleared it by hand; the system restarts the Assistant on demand.
+    static final String ASSISTANT = "com.google.android.katniss";
+    static final long ASSISTANT_RESTART_DELAY_MS = 30_000;   // updates arrive in bursts; each one pushes this back
+
+    final Runnable restartAssistant = () -> {
+        try {
+            new ProcessBuilder("su", "-c", "am force-stop " + ASSISTANT).start().waitFor();
+            Log.i(T, "Assistant restarted after an update");
+        } catch (Exception e) {
+            Log.w(T, "Assistant restart: " + e);
+        }
+    };
+
+    final BroadcastReceiver updateReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            String pkg = i.getData() != null ? i.getData().getSchemeSpecificPart() : null;
+            if (!"com.google.android.gms".equals(pkg) && !ASSISTANT.equals(pkg)) return;
+            Log.i(T, pkg + " updated: restarting the Assistant in " + ASSISTANT_RESTART_DELAY_MS / 1000 + " s");
+            h.removeCallbacks(restartAssistant);
+            h.postDelayed(restartAssistant, ASSISTANT_RESTART_DELAY_MS);
+        }
+    };
 
     final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {

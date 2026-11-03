@@ -4,6 +4,11 @@
 - After Bluetooth is switched off and on, the bridge doesn't reconnect to the remote by itself. Reboot the box, or
   restart the service: `am start-foreground-service -n net.sk4pro.siriremote/.BridgeService` (after `am force-stop`).
 
+## 1.5 — 2026-11-03
+- Restarts Google Assistant 30 s after Google Play Services or the Assistant updates in the background. Such an update
+  kills the Assistant mid-session, and it could come back stuck "listening", pausing any video the moment it started
+  (seen in Nuvio). Manual fix if it ever happens anyway: `am force-stop com.google.android.katniss`.
+
 ## 1.4 — 2026-11-02
 - Voice search inside apps: hold Siri while an app's own voice search is listening (e.g. select Nuvio's mic button)
   and your voice goes into that app instead of opening the Assistant. Works with any app using Android's speech
