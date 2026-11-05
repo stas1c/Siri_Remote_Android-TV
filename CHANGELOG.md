@@ -4,6 +4,10 @@
 - After Bluetooth is switched off and on, the bridge doesn't reconnect to the remote by itself. Reboot the box, or
   restart the service: `am start-foreground-service -n net.sk4pro.siriremote/.BridgeService` (after `am force-stop`).
 
+## 1.6 — 2026-11-05
+- Holding Power (about a second) opens Android's power menu (power off, restart, sleep…). A quick press still puts the
+  box to sleep, now when the button is released.
+
 ## 1.5 — 2026-11-03
 - Restarts Google Assistant 30 s after Google Play Services or the Assistant updates in the background. Such an update
   kills the Assistant mid-session, and it could come back stuck "listening", pausing any video the moment it started

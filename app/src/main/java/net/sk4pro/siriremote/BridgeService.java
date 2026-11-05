@@ -58,13 +58,14 @@ public class BridgeService extends Service {
     static final UUID APPLE_SERVICE = UUID.fromString("8341f2b4-c013-4f04-8197-c4cdb42e26dc");   // only Apple remotes have it
     static final android.os.ParcelUuid HID = android.os.ParcelUuid.fromString("00001812-0000-1000-8000-00805f9b34fb");
     // bitmask -> Linux key code (Generic.kl turns these into Android keys); 1 = repeats while held,
-    // 2 = held exactly as long as the button (Android's own long-press, like a regular remote)
+    // 2 = held exactly as long as the button (Android's own long-press, like a regular remote),
+    // 3 = tap on release, or Android's long-press if held past LONG_HOLD_MS (Power: sleep / power menu)
     static final int[][] KEYS = {
         {1, 172, 0},     // TV button   -> KEY_HOMEPAGE (HOME)
         {2, 115, 1},     // Volume +    -> KEY_VOLUMEUP
         {4, 114, 1},     // Volume -    -> KEY_VOLUMEDOWN
         {8, 353, 2},     // pad click   -> KEY_SELECT (DPAD_CENTER)
-        {16, 116, 0},    // Power       -> KEY_POWER
+        {16, 116, 3},    // Power       -> KEY_POWER
         {32, 583, 0},    // Siri        -> KEY_ASSISTANT
         {64, 158, 0},    // Back        -> KEY_BACK
         {128, 113, 0},   // Mute        -> KEY_MUTE
@@ -77,6 +78,12 @@ public class BridgeService extends Service {
     // The remote reports a release ~0.5 s after a quick tap, long enough for Android's key repeat (0.4 s) to fire,
     // so every press is sent as a whole tap at once; only a key still held past HOLD_MS is held down in Android.
     static final int HOLD_MS = 600;
+    // Type 3 can't simply be held like type 2: the late release (~0.5 s) would pass Android's 0.4 s long-press on
+    // every tap. So a tap is sent on release, and a hold past LONG_HOLD_MS (clear of that late release) goes down
+    // in Android and stays down at least LONG_PRESS_MS, so Android always takes it as a long press.
+    static final int LONG_HOLD_MS = 800;
+    static final int LONG_PRESS_MS = 700;
+    long longDownAt;
 
     final Handler h = new Handler(Looper.getMainLooper());
     final ArrayDeque<Runnable> ops = new ArrayDeque<>();   // Android GATT runs one operation at a time
@@ -381,6 +388,19 @@ public class BridgeService extends Service {
                 else { voice.disarm(); key(buf, KEY_MENU, 1); key(buf, KEY_MENU, 0); }   // a tap
             } else if ((pressed & bit) != 0 && k[2] == 2) {
                 key(buf, code, 1); held |= bit;   // released below when the button comes up
+            } else if ((pressed & bit) != 0 && k[2] == 3) {
+                int press = ++presses;
+                h.postDelayed(() -> {
+                    if (press != presses || (lastButtons & bit) == 0) return;
+                    held |= bit; longDownAt = android.os.SystemClock.uptimeMillis();
+                    ByteBuffer x = buffer(); key(x, code, 1); inject(x);   // a long press: up comes on release
+                }, LONG_HOLD_MS);
+            } else if ((released & bit) != 0 && k[2] == 3) {
+                if ((held & bit) == 0) { key(buf, code, 1); key(buf, code, 0); continue; }   // released early: a tap
+                held &= ~bit;
+                long wait = Math.max(0, longDownAt + LONG_PRESS_MS - android.os.SystemClock.uptimeMillis());
+                h.postDelayed(() -> { ByteBuffer x = buffer(); key(x, code, 0); inject(x); }, wait);
+                continue;
             } else if ((pressed & bit) != 0) {
                 key(buf, code, 1); key(buf, code, 0);
                 int press = ++presses;
