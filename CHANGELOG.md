@@ -4,6 +4,11 @@
 - After Bluetooth is switched off and on, the bridge doesn't reconnect to the remote by itself. Reboot the box, or
   restart the service: `am start-foreground-service -n net.sk4pro.siriremote/.BridgeService` (after `am force-stop`).
 
+## 1.7 — 2026-11-14
+- Restarts Google Assistant whenever it pauses a video with no Siri voice query in the 15 s before: that's the stuck
+  Assistant from 1.5, which also shows up without any update (seen in SmartTube). Press Play once and the video goes
+  on. Saying "pause" by voice still works. Needs root (`su`) for reading the system log.
+
 ## 1.6 — 2026-11-05
 - Holding Power (about a second) opens Android's power menu (power off, restart, sleep…). A quick press still puts the
   box to sleep, now when the button is released.

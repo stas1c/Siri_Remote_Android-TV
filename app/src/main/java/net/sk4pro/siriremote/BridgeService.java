@@ -114,6 +114,7 @@ public class BridgeService extends Service {
         IntentFilter updates = new IntentFilter(Intent.ACTION_PACKAGE_REPLACED);
         updates.addDataScheme("package");
         registerReceiver(updateReceiver, updates);
+        watchAssistant();
     }
 
     @Override public void onDestroy() {
@@ -123,6 +124,8 @@ public class BridgeService extends Service {
         unregisterReceiver(bondReceiver);
         unregisterReceiver(updateReceiver);
         h.removeCallbacks(restartAssistant);
+        watching = false;
+        if (watchdog != null) watchdog.destroy();
         if (injector != null) injector.destroy();   // removes the "Siri Remote" input device
         state("Disconnected");
     }
@@ -235,11 +238,44 @@ public class BridgeService extends Service {
     final Runnable restartAssistant = () -> {
         try {
             new ProcessBuilder("su", "-c", "am force-stop " + ASSISTANT).start().waitFor();
-            Log.i(T, "Assistant restarted after an update");
+            Log.i(T, "Assistant restarted");
         } catch (Exception e) {
             Log.w(T, "Assistant restart: " + e);
         }
     };
+
+    // A stuck Assistant also appears without any update (seen with SmartTube): it pauses media within a second of
+    // every start. A pause the Assistant sends with no Siri voice query just before can't be a voice command: restart it.
+    static final long VOICE_WINDOW_MS = 15_000;   // a spoken "pause" reaches the app a few seconds after Siri is released
+    volatile long voiceAt;     // last Siri press or release (uptime)
+    long stuckRestartAt = -60_000;
+    volatile boolean watching = true;
+    volatile Process watchdog;
+
+    void watchAssistant() {
+        new Thread(() -> {
+            while (watching) {
+                try {
+                    Process p = watchdog = new ProcessBuilder("su", "-c", "logcat -T 1 -s MediaSessionService:I").redirectErrorStream(true).start();
+                    java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
+                    for (String l; (l = r.readLine()) != null; )
+                        if (l.contains("callingPackage:" + ASSISTANT + " ") && l.contains("MediaSessionRecord:pause")) h.post(this::assistantPaused);
+                    p.waitFor();
+                } catch (Exception e) {
+                    Log.w(T, "Assistant watchdog: " + e);
+                }
+                if (watching) android.os.SystemClock.sleep(5000);   // logcat died: start it again
+            }
+        }, "assistant-watchdog").start();
+    }
+
+    void assistantPaused() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - voiceAt < VOICE_WINDOW_MS || now - stuckRestartAt < 30_000) return;   // a voice command, or already handled
+        stuckRestartAt = now;
+        Log.i(T, "Assistant paused media with no voice query: it is stuck, restarting it");
+        new Thread(restartAssistant).start();
+    }
 
     final BroadcastReceiver updateReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
@@ -375,6 +411,7 @@ public class BridgeService extends Service {
         ByteBuffer buf = buffer();
         for (int[] k : KEYS) {
             int bit = k[0], code = k[1];
+            if (bit == SIRI && ((pressed | released) & bit) != 0) voiceAt = android.os.SystemClock.uptimeMillis();
             if ((pressed & bit) != 0 && bit == SIRI) {   // tap or hold: decided on release or after VOICE_HOLD_MS
                 voice.arm();
                 int press = ++presses;

@@ -53,6 +53,9 @@ Not supported: touch-surface swipes.
 - Android's own HID host is switched off for the remote: with no kernel HID device behind the remote's empty report map
   it stalled ~50 ms on every report, delivering the 50 frames/s microphone stream at 20/s (speech arrived chopped and
   slowed down, and the Assistant heard nothing).
+- Google Assistant sometimes gets stuck and pauses every video the moment it starts. The bridge watches the system log
+  and restarts the Assistant when it pauses media with no Siri voice query in the 15 s before (also 30 s after a Play
+  Services or Assistant update).
 - It only acts on devices that expose Apple's remote service, so it can't take over another Bluetooth device by mistake.
 - Privileged permissions used: `BLUETOOTH_PRIVILEGED` (Apple's HID data), `START_ACTIVITIES_FROM_BACKGROUND` (opening the Assistant),
   `MODIFY_AUDIO_ROUTING` (voice injection).
